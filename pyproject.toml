@@ -12,6 +12,8 @@ dependencies = [
     "pandas>=2.2",
     "scipy>=1.14",
     "matplotlib>=3.9",
+    "scikit-learn>=1.5",
+    "statsmodels>=0.14",
 ]
 
 [project.scripts]
@@ -52,7 +54,7 @@ mypy_path = "src"
 packages = ["radar"]
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "matplotlib.*"]
+module = ["scipy.*", "matplotlib.*", "sklearn.*", "statsmodels.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

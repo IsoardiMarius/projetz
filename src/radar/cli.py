@@ -11,6 +11,7 @@ from radar.analysis import detector
 from radar.collect import Collector
 from radar.phase0 import analyze as phase0_analyze
 from radar.phase0 import collect as phase0_collect
+from radar.phase0 import edge_study as phase0_edge
 from radar.phase0 import report as phase0_report
 from radar.phase0.sample import SampleSpec
 from radar.polymarket.data_api import DATA_API_URL, DataApi
@@ -46,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     p_report = sub.add_parser("phase0-report", help="rapport de la Phase 0 (local)")
     p_report.add_argument("--out", type=Path, default=Path("reports/phase0"))
 
+    p_edge = sub.add_parser("phase0-edge", help="étude du détecteur v2 (local)")
+    p_edge.add_argument("--out", type=Path, default=Path("reports/phase0"))
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -75,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "phase0-report":
             report = phase0_report.build_report(conn, args.out)
             print(f"Rapport : {report}")
+        elif args.command == "phase0-edge":
+            study = phase0_edge.run(conn, args.out)
+            print(f"Rapport : {study.report}")
         elif args.command == "profile-wallet":
             for wallet in args.wallet:
                 collector.profile_wallet(wallet.lower())
