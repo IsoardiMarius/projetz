@@ -27,7 +27,7 @@ from radar.storage.repository import Conn
 log = logging.getLogger(__name__)
 
 DELAY_LABELS = {
-    0: "0 s",
+    0: "bloc suivant",
     60: "1 min",
     300: "5 min",
     900: "15 min",
@@ -156,7 +156,67 @@ def _case_chart(res: MarketResult, alerts: pd.DataFrame, path: Path) -> None:
     plt.close(fig)
 
 
-def _case_section(results: list[MarketResult], sim: pd.DataFrame, out_dir: Path) -> list[str]:
+def _short(wallet: str) -> str:
+    return f"{wallet[:6]}…{wallet[-4:]}"
+
+
+def _top_informed_buyers(
+    res: MarketResult, signals0: pd.DataFrame, profiles: pd.DataFrame, top: int = 5
+) -> list[str]:
+    """Plus gros gagnants ayant acheté l'issue gagnante à ≤ 50 ¢ avant l'information.
+
+    Ce tableau est rétrospectif (il utilise l'issue) : il sert à vérifier si le détecteur,
+    lui sans information future, aurait repéré ces comptes.
+    """
+    winner = res.market.winning_token_id
+    if res.t_info is None or winner is None:
+        return []
+    t_info = pd.Timestamp(res.t_info)
+    t = res.trades
+    buys = t[
+        (t["token_id"] == winner) & (t["side"] == "BUY") & (t["price"] <= 0.5) & (t["ts"] < t_info)
+    ].copy()
+    if buys.empty:
+        return []
+    buys["usdc"] = buys["size"] * buys["price"]
+    agg = buys.groupby("wallet").agg(
+        usdc=("usdc", "sum"), shares=("size", "sum"), first=("ts", "min"), last=("ts", "max")
+    )
+    agg["profit"] = agg["shares"] - agg["usdc"]
+    agg = agg.sort_values("profit", ascending=False).head(top)
+    first_seen = profiles.set_index("wallet")["first_activity_ts"]
+    med = prices.rolling_median(res.views[winner], "30min").dropna()
+    flagged = set(signals0["wallet"])
+    alerted = set(signals0[signals0["alert"]]["wallet"])
+    lines = [
+        "",
+        "Plus gros acheteurs gagnants avant l'information (rétrospectif) :",
+        "",
+        "| Wallet | Misé | Prix moyen | Gain | Âge au 1er achat | Avance du 1er achat | "
+        "Prix 1 h après | Repéré ? |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for wallet, row in agg.iterrows():
+        seen = first_seen.get(wallet)
+        age = (
+            f"{(row['first'] - seen).total_seconds() / 86400:.1f} j"
+            if seen is not None and not pd.isna(seen)
+            else "inconnu"
+        )
+        lead_h = (t_info - row["first"]).total_seconds() / 3600
+        after = med[med.index >= row["first"] + pd.Timedelta(hours=1)]
+        price_1h = f"{after.iloc[0]:.0%}" if len(after) else "—"
+        status = "alerte" if wallet in alerted else ("signal" if wallet in flagged else "non")
+        lines.append(
+            f"| {_short(str(wallet))} | {row['usdc']:,.0f} $ | {row['usdc'] / row['shares']:.0%} | "
+            f"{row['profit']:,.0f} $ | {age} | {lead_h:.1f} h | {price_1h} | {status} |"
+        )
+    return lines
+
+
+def _case_section(
+    results: list[MarketResult], sim: pd.DataFrame, out_dir: Path, profiles: pd.DataFrame
+) -> list[str]:
     lines = ["## 1. Les cas connus", ""]
     by_key = {c.key: c for c in CASES}
     for key in sorted({r.market.case_key for r in results if r.market.case_key}):
@@ -199,6 +259,7 @@ def _case_section(results: list[MarketResult], sim: pd.DataFrame, out_dir: Path)
                     f"- Suiveur de **toutes** les alertes de ce marché "
                     f"({len(alerts)}), rendement moyen : " + " ; ".join(parts)
                 )
+            lines += _top_informed_buyers(res, s0, profiles)
             chart = out_dir / f"cas_{res.market.condition_id[:10]}.png"
             _case_chart(res, s0[s0["alert"]], chart)
             if chart.exists():
@@ -284,7 +345,7 @@ def build_report(conn: Conn, out_dir: Path, rule: detector.Rule | None = None) -
         f"le reste = cas connus). Âge connu pour {profiled:.0%} des signaux.",
         "",
     ]
-    lines += _case_section(results, sim, out_dir)
+    lines += _case_section(results, sim, out_dir, profiles)
     lines += [
         "## 2. Échantillon large : les alertes battent-elles le hasard ?",
         "",

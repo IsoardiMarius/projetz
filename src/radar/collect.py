@@ -59,23 +59,17 @@ class Collector:
             log.warning("Aucun marché pour l'événement %s (filtre : %s)", slug, question_pattern)
         return self.collect_markets(markets)
 
-    def profile_wallet(self, wallet: str) -> None:
-        """Âge du wallet (première activité, dépôts compris) et liste de ses dépôts."""
-        first = next(
+    def profile_wallet(self, wallet: str, *, max_rows: int = 300) -> None:
+        """Âge du wallet (première activité, dépôts compris) et ses dépôts, en une seule requête.
+
+        On lit les `max_rows` premières lignes d'activité. Les dépôts plus tardifs ne sont pas
+        vus, ce qui suffit pour juger un compte récent.
+        """
+        rows = list(
             self.data_api.wallet_activity(
-                wallet, include_deposits_withdrawals=True, ascending=True, limit=1
-            ),
-            None,
-        )
-        deposits = list(
-            self.data_api.wallet_activity(
-                wallet,
-                types=["DEPOSIT"],
-                include_deposits_withdrawals=True,
-                ascending=True,
-                limit=200,
+                wallet, include_deposits_withdrawals=True, ascending=True, limit=max_rows
             )
         )
-        repository.save_wallet_profile(
-            self.conn, wallet, first.timestamp if first else None, deposits
-        )
+        first = rows[0].timestamp if rows else None
+        deposits = [r for r in rows if r.type == "DEPOSIT"]
+        repository.save_wallet_profile(self.conn, wallet, first, deposits)

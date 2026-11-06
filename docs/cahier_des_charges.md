@@ -332,7 +332,7 @@ Plus tard, si la Phase 0 montre qu'il faut du temps réel, un collecteur permane
 |--------|-------|----------|
 | Collecte | Python 3.12+, asyncio, `httpx`, `websockets`, Pydantic v2 | Validation stricte des réponses : les API ont beaucoup changé en 2026 et il faut détecter les ruptures. |
 | Stockage | **PostgreSQL** : Neon en production, local en développement | PostgreSQL est imposé par l'organisation. Comme Neon gratuit est limité à 1 Go, on ne stocke que les marchés et les wallets utiles (F-06), et on recalcule les historiques à la demande depuis l'API. |
-| Schéma | SQLAlchemy 2 (Core) + Alembic (migrations) | Schéma versionné, migrations reproductibles. |
+| Schéma | SQL versionné (migrations numérotées appliquées par `radar migrate`) + psycopg 3 | Schéma lisible, migrations reproductibles, sans couche ORM superflue. |
 | Analyse | Polars ou pandas, SciPy, statsmodels, igraph + leidenalg, scikit-learn | Bibliothèques standard et testées. |
 | API et interface | **Next.js** (React, TypeScript) sur Vercel ; **Sigma.js** (WebGL) pour le graphe ; **lightweight-charts** pour les courbes | Next.js est l'outil naturel de Vercel. L'interface lit les résultats que les tâches Python ont déjà calculés. Sigma.js affiche des milliers de bulles de façon fluide. |
 | Phase 0 | Bibliothèque Python + scripts qui produisent un rapport | Les tâches de collecte et d'analyse de la V1 réutilisent ce code. |

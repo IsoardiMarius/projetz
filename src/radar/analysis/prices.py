@@ -11,6 +11,7 @@ C'est le prix qu'aurait payé un suiveur qui achète k au marché.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -76,15 +77,22 @@ def information_time(
 
 
 def ask_price_after(
-    token_view_df: pd.DataFrame, when: datetime, *, max_wait: timedelta = timedelta(hours=2)
+    token_view_df: pd.DataFrame,
+    when: datetime,
+    *,
+    max_wait: timedelta = timedelta(hours=2),
+    strict: bool = False,
 ) -> tuple[datetime, float] | None:
     """Première exécution côté vendeur à partir de `when` : (horodatage, prix).
 
+    Avec `strict=True`, seules les exécutions postérieures à `when` comptent. On exclut ainsi
+    le bloc du trade observé : un suiveur ne peut pas entrer dans la même transaction.
     Renvoie None si aucune exécution n'a lieu dans le délai `max_wait`.
     """
     asks = token_view_df[token_view_df["ask"]]
     times = pd.DatetimeIndex(asks["ts"])
-    position = int(times.searchsorted(pd.Timestamp(when), side="left"))
+    side: Literal["left", "right"] = "right" if strict else "left"
+    position = int(times.searchsorted(pd.Timestamp(when), side=side))
     if position >= len(asks):
         return None
     row = asks.iloc[position]

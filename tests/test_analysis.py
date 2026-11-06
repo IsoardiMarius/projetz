@@ -70,6 +70,8 @@ def test_ask_price_after_respects_max_wait() -> None:
     assert prices.ask_price_after(view, at(0)) == (at(10), 0.2)
     assert prices.ask_price_after(view, at(0), max_wait=timedelta(minutes=5)) is None
     assert prices.ask_price_after(view, at(11)) is None
+    assert prices.ask_price_after(view, at(10)) == (at(10), 0.2)
+    assert prices.ask_price_after(view, at(10), strict=True) is None
 
 
 def test_information_time_after_last_surprise() -> None:
@@ -159,10 +161,10 @@ def test_simulate_enters_later_at_worse_price_and_stops_at_close() -> None:
         {"c1": market},
         delays=[timedelta(0), timedelta(minutes=1), timedelta(minutes=65)],
     )
-    assert out["entry_price"].tolist() == [0.20, 0.40, 0.80]
+    # Jamais dans le bloc du signal : la 1re entrée possible est l'exécution de la 3e minute.
+    assert out["entry_price"].tolist() == [0.40, 0.40, 0.80]
     assert out["filled"].tolist() == [True, True, False]  # 3e entrée après la clôture
-    assert out["ret"].iloc[0] == pytest.approx(4.0)
-    assert out["ret"].iloc[1] == pytest.approx(1.5)
+    assert out["ret"].iloc[0] == pytest.approx(1.5)
 
 
 # --- Statistiques ----------------------------------------------------------------------------

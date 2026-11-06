@@ -2,7 +2,7 @@
 
 Hypothèses (prudentes) :
 - le suiveur achète « au marché » : il paie le prix de la première exécution côté vendeur
-  observée après son retard ;
+  observée après son retard, et jamais dans le bloc du signal lui-même ;
 - il paie les frais taker du barème actuel ;
 - il garde la position jusqu'à la résolution : 1 $ par part si l'issue gagne, 0 sinon ;
 - petite mise (100 $) : on néglige l'impact de son propre ordre sur le carnet, qui n'est pas
@@ -68,7 +68,7 @@ def simulate(
         won = market.winning_token_id == token_id
         signal_ts = pd.Timestamp(signal["signal_ts"]).to_pydatetime()
         for delay in delays:
-            entry = ask_price_after(view, signal_ts + delay, max_wait=max_wait)
+            entry = ask_price_after(view, signal_ts + delay, max_wait=max_wait, strict=True)
             filled = entry is not None and (
                 market.closed_time is None or entry[0] < market.closed_time
             )
