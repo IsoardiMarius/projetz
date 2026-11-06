@@ -145,3 +145,74 @@ def wallet_track_record(signals: pd.DataFrame, closed_time: pd.Series) -> pd.Dat
     excess = merged["cum_excess"].reindex(signals.index).fillna(0.0)
     out["prior_excess"] = excess / (out["prior_n"] + 5.0)
     return out
+
+
+def first_funders(funders: pd.DataFrame) -> pd.DataFrame:
+    """Premier financeur connu de chaque wallet : wallet, funder, funded_ts.
+
+    `funders` contient wallet, funder (éventuellement nul) et ts (date du dépôt).
+    """
+    known = funders.dropna(subset=["funder"]).sort_values("ts", kind="stable")
+    first = known.groupby("wallet", as_index=False).first()
+    return first.rename(columns={"ts": "funded_ts"})[["wallet", "funder", "funded_ts"]]
+
+
+def hub_set(first: pd.DataFrame, min_wallets: int = 20) -> set[str]:
+    """Financeurs partagés par au moins `min_wallets` wallets : exchanges, bridges, relais.
+
+    Un financeur commun de ce type ne dit rien d'un lien entre comptes.
+    """
+    counts = first.groupby("funder")["wallet"].nunique()
+    return set(counts[counts >= min_wallets].index.astype(str))
+
+
+def funding_features(
+    signals: pd.DataFrame,
+    first: pd.DataFrame,
+    hubs: set[str],
+    *,
+    window: timedelta = timedelta(hours=24),
+) -> pd.DataFrame:
+    """Liens de financement au moment de chaque signal (aligné sur l'index de `signals`).
+
+    - funder_known / funder_is_hub : origine des fonds trouvée, et s'agit-il d'un hub ;
+    - cluster_size : wallets financés par le même financeur personnel **avant** le signal ;
+    - cluster_signals_24h : signaux, dans les 24 h précédentes et sur le même jeton, d'autres
+      wallets ayant le même financeur personnel (comptes coordonnés).
+    """
+    df = signals[["wallet", "token_id", "signal_ts"]].copy()
+    df["signal_ts"] = pd.to_datetime(df["signal_ts"], utc=True)
+    df["wallet"] = df["wallet"].astype(str)
+    df["token_id"] = df["token_id"].astype(str)
+    df = df.merge(first, on="wallet", how="left")
+    out = pd.DataFrame(index=signals.index)
+    out["funder_known"] = df["funder"].notna().to_numpy(dtype=float)
+    is_hub = df["funder"].isin(hubs).to_numpy()
+    out["funder_is_hub"] = is_hub.astype(float)
+    personal = df["funder"].where(~df["funder"].isin(hubs))
+
+    # Taille du groupe connue à la date du signal.
+    fund = first[~first["funder"].isin(hubs)].copy()
+    fund["funded_ts"] = pd.to_datetime(fund["funded_ts"], utc=True)
+    sizes = np.zeros(len(df))
+    for funder, idx in df.groupby(personal.to_numpy(), sort=False).groups.items():
+        times = np.sort(
+            pd.DatetimeIndex(fund.loc[fund["funder"] == funder, "funded_ts"]).as_unit("ns").asi8
+        )
+        when = pd.DatetimeIndex(df.loc[idx, "signal_ts"]).as_unit("ns").asi8
+        sizes[np.asarray(idx)] = np.searchsorted(times, when, side="right")
+    out["cluster_size"] = sizes
+
+    # Signaux coordonnés : même jeton, même financeur personnel, dans la fenêtre précédente.
+    coordinated = np.zeros(len(df))
+    keyed = df.assign(personal=personal).dropna(subset=["personal"])
+    for _, block in keyed.groupby(["token_id", "personal"], sort=False):
+        if len(block) < 2:
+            continue
+        t = np.sort(pd.DatetimeIndex(block["signal_ts"]).as_unit("ns").asi8)
+        own = pd.DatetimeIndex(block["signal_ts"]).as_unit("ns").asi8
+        lo = np.searchsorted(t, own - int(window.total_seconds() * 1e9), side="left")
+        hi = np.searchsorted(t, own, side="left")  # strictement avant : pas soi-même
+        coordinated[block.index.to_numpy()] = hi - lo
+    out["cluster_signals_24h"] = coordinated
+    return out

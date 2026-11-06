@@ -50,6 +50,10 @@ FEATURES = [
     "q_award",
     "q_date_ladder",
     "q_exact_day",
+    "funder_known",
+    "funder_is_hub",
+    "cluster_size_log",
+    "cluster_signals_24h",
 ]
 
 
@@ -60,7 +64,10 @@ class EdgeStudy:
 
 
 def build_table(
-    results: list[MarketResult], profiles: pd.DataFrame, deposits: pd.DataFrame
+    results: list[MarketResult],
+    profiles: pd.DataFrame,
+    deposits: pd.DataFrame,
+    funders: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Signaux + caractéristiques + prix du suiveur à 5 min + cible."""
     sim = simulate_all(results, profiles, deposits, RULE, delays=(FOLLOW_DELAY,))
@@ -87,6 +94,14 @@ def build_table(
     table = pd.concat(parts, ignore_index=True)
     track = features.wallet_track_record(table, table["closed_time"])
     table = table.join(track)
+    if funders is not None and not funders.empty:
+        first = features.first_funders(funders)
+        hubs = features.hub_set(first, min_wallets=20)
+        table = table.join(features.funding_features(table, first, hubs))
+    else:
+        for column in ("funder_known", "funder_is_hub", "cluster_size", "cluster_signals_24h"):
+            table[column] = 0.0
+    table["cluster_size_log"] = np.log1p(table["cluster_size"])
 
     days = table["wallet_age"].dt.total_seconds() / 86400
     table["log_age_days"] = np.log1p(days.clip(lower=0))
@@ -138,7 +153,12 @@ def run(conn: Conn, out_dir: Path, *, split_date: datetime | None = None) -> Edg
     out_dir.mkdir(parents=True, exist_ok=True)
     results = list(iter_results(conn, RULE))
     profiles, deposits = load_wallet_context(conn)
-    table = build_table(results, profiles, deposits)
+    funders = pd.DataFrame(
+        conn.execute("SELECT wallet, funder, ts FROM wallet_funders").fetchall(),
+        columns=["wallet", "funder", "ts"],
+    )
+    funders["ts"] = pd.to_datetime(funders["ts"], utc=True)
+    table = build_table(results, profiles, deposits, funders)
     sample = table[table["grp"] == "sample"].copy()
     cases = table[table["grp"] == "case"].copy()
     log.info("Table : %d signaux (%d échantillon, %d cas)", len(table), len(sample), len(cases))

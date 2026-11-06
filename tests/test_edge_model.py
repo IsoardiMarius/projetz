@@ -117,3 +117,43 @@ def test_gbm_cross_validation_finds_nonlinear_edge() -> None:
     )
     _, loss = edge_model.cross_validate_gbm(data, ["lp", "x"], price_col="price")
     assert loss < edge_model.log_loss(won.astype(float), price) - 0.01
+
+
+def test_funding_features_detect_coordinated_wallets_and_ignore_hubs() -> None:
+    funders = pd.DataFrame(
+        {
+            "wallet": ["a", "b", "c", "d", "e"],
+            "funder": ["owner1", "owner1", "owner1", "hub", "hub"],
+            "ts": [
+                T0 - timedelta(days=3),
+                T0 - timedelta(days=2),
+                T0 + timedelta(days=9),
+                T0 - timedelta(days=1),
+                T0 - timedelta(days=1),
+            ],
+        }
+    )
+    first = features.first_funders(funders)
+    hubs = features.hub_set(first, min_wallets=2)
+    assert hubs == {"hub", "owner1"}  # seuil bas pour le test : owner1 finance 3 wallets
+    hubs = features.hub_set(first, min_wallets=4)
+    assert hubs == set()
+    hubs = {"hub"}
+    signals = pd.DataFrame(
+        {
+            "wallet": ["a", "b", "d", "e"],
+            "token_id": ["Y", "Y", "Y", "Y"],
+            "signal_ts": [
+                T0,
+                T0 + timedelta(hours=2),
+                T0 + timedelta(hours=1),
+                T0 + timedelta(hours=3),
+            ],
+        }
+    )
+    out = features.funding_features(signals, first, hubs)
+    assert out["funder_is_hub"].tolist() == [0.0, 0.0, 1.0, 1.0]
+    # Groupe d'owner1 connu au signal : a et b (c est financé plus tard).
+    assert out["cluster_size"].tolist() == [2.0, 2.0, 0.0, 0.0]
+    # b achète la même issue 2 h après a, avec le même financeur personnel ; pas d et e (hub).
+    assert out["cluster_signals_24h"].tolist() == [0.0, 1.0, 0.0, 0.0]
