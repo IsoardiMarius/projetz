@@ -217,7 +217,16 @@ def _top_informed_buyers(
 def _case_section(
     results: list[MarketResult], sim: pd.DataFrame, out_dir: Path, profiles: pd.DataFrame
 ) -> list[str]:
-    lines = ["## 1. Les cas connus", ""]
+    lines = [
+        "## 1. Les cas connus",
+        "",
+        "> **Attention, biais de sélection.** Ces marchés ont été retenus *parce que* l'outsider "
+        "a gagné : tout acheteur de l'issue gagnante y a gagné, initié ou non. Cette section "
+        "montre si le détecteur aurait vu ces comptes, et avec quelle avance. Elle ne dit rien "
+        "de la rentabilité d'une stratégie : seule la section 2 (marchés tirés au hasard) le "
+        "permet.",
+        "",
+    ]
     by_key = {c.key: c for c in CASES}
     for key in sorted({r.market.case_key for r in results if r.market.case_key}):
         case = by_key[key]
