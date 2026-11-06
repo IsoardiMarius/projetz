@@ -286,7 +286,10 @@ def _sensitivity(
     lines = [
         "## 3. Sensibilité aux seuils (échantillon large)",
         "",
-        "Tous les réglages sont montrés : aucun n'a été choisi en regardant les résultats.",
+        "Tous les réglages sont montrés : aucun n'a été choisi en regardant les résultats. "
+        "Avec 27 réglages et des intervalles à 90 %, il faut s'attendre à en voir 2 ou 3 "
+        "« positifs » par pur hasard : seul un motif régulier sur toute une ligne ou colonne "
+        "aurait du sens.",
         "",
         "| Prix max | Mise min | Âge max | Alertes | Gagnantes | Prix payé | "
         "Rendement suiveur à 5 min |",
