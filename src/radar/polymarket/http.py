@@ -89,6 +89,10 @@ class HttpClient:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
+    def post_json(self, path: str, payload: Any) -> Any:
+        """POST JSON avec les mêmes reprises que `get_json` (utilisé pour le JSON-RPC)."""
+        return self._request("POST", path, payload=payload)
+
     def get_json(
         self,
         path: str,
@@ -103,11 +107,21 @@ class HttpClient:
         query: dict[str, QueryValue] = dict(params or {})
         if bust_cache:
             query["_"] = str(int(self._clock() * 1000))
+        return self._request("GET", path, params=_encode(query))
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: list[tuple[str, str | int | float | bool | None]] | None = None,
+        payload: Any = None,
+    ) -> Any:
         last_problem = ""
         for attempt in range(self._max_retries + 1):
             self._limiter.wait()
             try:
-                response = self._client.get(path, params=_encode(query))
+                response = self._client.request(method, path, params=params, json=payload)
             except httpx.TransportError as exc:
                 last_problem = f"erreur réseau : {exc!r}"
                 self._backoff(attempt, None)

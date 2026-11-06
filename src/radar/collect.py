@@ -6,9 +6,12 @@ import logging
 import re
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
+from radar.chain.funding import PolygonRpc, extract_funder
 from radar.polymarket.data_api import DataApi
 from radar.polymarket.gamma import GammaApi
+from radar.polymarket.http import ApiError
 from radar.polymarket.models import Activity, Market, Trade
 from radar.storage import repository
 from radar.storage.repository import Conn, MarketCollection
@@ -107,3 +110,27 @@ class Collector:
                 if done % 250 == 0:
                     log.info("… %d / %d wallets profilés", done, len(wallets))
         return done
+
+
+def trace_funders(conn: Conn, rpc: PolygonRpc, wallets: Iterable[str], *, workers: int = 6) -> int:
+    """Cherche l'expéditeur réel de chaque dépôt pas encore tracé de ces wallets."""
+    todo = repository.untraced_deposits(conn, wallets)
+    log.info("%d dépôts à tracer", len(todo))
+
+    def fetch(item: tuple[str, str, datetime]) -> str | None:
+        receipt = rpc.receipt(item[1])
+        return extract_funder(receipt, item[0]) if receipt else None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fetch, item): item for item in todo}
+        for n, future in enumerate(as_completed(futures), start=1):
+            wallet, tx_hash, ts = futures[future]
+            try:
+                funder = future.result()
+            except ApiError as exc:
+                log.warning("Dépôt %s non tracé : %s", tx_hash[:12], exc)
+                continue
+            repository.save_funder(conn, wallet, tx_hash, funder, ts)
+            if n % 500 == 0:
+                log.info("… %d / %d dépôts tracés", n, len(todo))
+    return len(todo)

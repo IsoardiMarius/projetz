@@ -170,3 +170,25 @@ def save_wallet_profile(
 
 def profiled_wallets(conn: Conn) -> set[str]:
     return {str(r[0]) for r in conn.execute("SELECT wallet FROM wallet_profiles")}
+
+
+def untraced_deposits(conn: Conn, wallets: Iterable[str]) -> list[tuple[str, str, datetime]]:
+    """Dépôts (wallet, tx, date) de ces wallets dont l'origine n'a pas encore été cherchée."""
+    rows = conn.execute(
+        """
+        SELECT d.wallet, d.tx_hash, d.ts FROM wallet_deposits d
+        LEFT JOIN wallet_funders f ON f.wallet = d.wallet AND f.tx_hash = d.tx_hash
+        WHERE f.wallet IS NULL AND d.wallet = ANY(%s)
+        ORDER BY d.wallet, d.ts
+        """,
+        (list(wallets),),
+    ).fetchall()
+    return [(str(r[0]), str(r[1]), r[2]) for r in rows if isinstance(r[2], datetime)]
+
+
+def save_funder(conn: Conn, wallet: str, tx_hash: str, funder: str | None, ts: datetime) -> None:
+    conn.execute(
+        "INSERT INTO wallet_funders (wallet, tx_hash, funder, ts) VALUES (%s, %s, %s, %s)"
+        " ON CONFLICT (wallet, tx_hash) DO UPDATE SET funder = EXCLUDED.funder",
+        (wallet, tx_hash, funder, ts),
+    )

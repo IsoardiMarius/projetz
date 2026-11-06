@@ -192,3 +192,26 @@ def simulate_all(
         out[column] = pd.to_timedelta(out[column])
     out["lead"] = out["t_info"] - out["signal_ts"]
     return out
+
+
+def signal_wallets(conn: Conn, *, young_days: int | None = None) -> list[str]:
+    """Wallets ayant au moins un signal (règle la plus large), éventuellement récents seulement.
+
+    Approximation SQL de la règle (≥ 500 $ achetés à ≤ 50 ¢ sur un jeton), sans recalculer
+    les signaux en Python. L'âge est mesuré au premier achat.
+    """
+    rows = conn.execute(
+        """
+        WITH s AS (
+            SELECT t.wallet, min(t.ts) AS first_buy FROM trades t
+            JOIN phase0_markets USING (condition_id)
+            WHERE t.side = 'BUY' AND t.price <= 0.5
+            GROUP BY t.condition_id, t.wallet, t.token_id
+            HAVING sum(t.size * t.price) >= 500
+        )
+        SELECT DISTINCT s.wallet FROM s JOIN wallet_profiles p USING (wallet)
+        WHERE %s::int IS NULL OR s.first_buy - p.first_activity_ts <= make_interval(days => %s::int)
+        """,
+        (young_days, young_days),
+    ).fetchall()
+    return [str(r[0]) for r in rows]
