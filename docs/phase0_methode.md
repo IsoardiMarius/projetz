@@ -21,7 +21,7 @@ Seules des informations disponibles à l'instant du signal sont utilisées. L'an
 ## Suiveur simulé
 
 - Il achète la même issue **au marché** : le prix de la première exécution côté vendeur après son retard, et jamais dans le bloc du signal.
-- Retards testés : bloc suivant, 1 min, 5 min, 15 min, 30 min, 1 h, 4 h. Ils correspondent à un suivi temps réel, à un suivi minute par minute et à une collecte toutes les 15-30 min (GitHub Actions).
+- Retards testés : bloc suivant, 1 min, 5 min, 15 min, 30 min, 1 h, 4 h. Ils correspondent à un flux temps réel (Durable Object Cloudflare), à une interrogation chaque minute (cron Cloudflare) et à des analyses toutes les 30-60 min.
 - Frais taker selon le barème actuel ; la position est gardée jusqu'à la résolution.
 - Petite mise (100 $) : l'impact de son propre ordre est négligé, faute d'historique du carnet d'ordres.
 

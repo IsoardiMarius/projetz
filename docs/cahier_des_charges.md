@@ -319,24 +319,30 @@ Le **paper trading simule le mode d'exécution**. Un ordre limite (maker) est gr
 ## 8. Architecture technique
 
 ```
- Data API v2 / Gamma ──┐   GitHub Actions (Python, toutes les 15-30 min)
- CLOB (prix, carnets) ─┼─> collecte + analyse (signaux, graphe, scores) ─> Neon PostgreSQL
- RPC / Etherscan ──────┤                                                        │
- Actualités, Kalshi ───┘                                                        v
-                                                 Vercel : API + interface web (accès privé)
+                 ┌──────────────────────── Cloudflare (compte du builder) ────────────────────────┐
+ Flux temps réel │ Durable Object « collecteur » : connexion permanente au flux RTDS, filtrage,     │
+ Polymarket ─────┼─> écritures groupées ──────────────────────────────┐                           │
+ Data API, Gamma │ Cron chaque minute : repli par interrogation,      │                           │
+ ────────────────┼─> métadonnées des marchés, surveillance du collecteur│                          │
+                 │                                                    v                           │
+                 │ Worker « app » : interface web + API  <──── Hyperdrive ────> Neon PostgreSQL   │
+                 │ protégé par Cloudflare Access (connexion obligatoire)        (Francfort)       │
+                 └────────────────────────────────────────────────────────────────▲──────────────┘
+                                                                                  │
+ GitHub Actions (Python, toutes les 30-60 min) : signaux, graphe, scores, rapports ┘
 ```
-
-Plus tard, si la Phase 0 montre qu'il faut du temps réel, un collecteur permanent (flux RTDS, machine allumée 24 h/24) pourra alimenter la même base.
 
 | Couche | Choix | Pourquoi |
 |--------|-------|----------|
-| Collecte | Python 3.12+, asyncio, `httpx`, `websockets`, Pydantic v2 | Validation stricte des réponses : les API ont beaucoup changé en 2026 et il faut détecter les ruptures. |
-| Stockage | **PostgreSQL** : Neon en production, local en développement | PostgreSQL est imposé par l'organisation. Comme Neon gratuit est limité à 1 Go, on ne stocke que les marchés et les wallets utiles (F-06), et on recalcule les historiques à la demande depuis l'API. |
+| Collecte temps réel | **Cloudflare Worker + Durable Object** (TypeScript) | Un Durable Object peut garder ouverte la connexion au flux RTDS. Une alarme chaque minute la rouvre si elle tombe. Le code est léger (filtrage, mise en lots), car l'offre gratuite limite le calcul à 10 ms par exécution. |
+| Collecte planifiée | **Cron Cloudflare** chaque minute | Repli par interrogation de la Data API si le flux tombe, métadonnées des marchés, contrôle de santé du collecteur. |
+| Stockage | **PostgreSQL** : Neon en production, local en développement | PostgreSQL est imposé par l'organisation : la base SQLite de Cloudflare (D1) est exclue. Neon gratuit étant limité à 1 Go, on ne stocke que les marchés et les wallets utiles (F-06). |
+| Accès à la base depuis Cloudflare | **Hyperdrive** | Pool de connexions vers Neon, inclus dans l'offre gratuite (100 000 requêtes par jour), d'où les écritures groupées. |
 | Schéma | SQL versionné (migrations numérotées appliquées par `radar migrate`) + psycopg 3 | Schéma lisible, migrations reproductibles, sans couche ORM superflue. |
-| Analyse | Polars ou pandas, SciPy, statsmodels, igraph + leidenalg, scikit-learn | Bibliothèques standard et testées. |
-| API et interface | **Next.js** (React, TypeScript) sur Vercel ; **Sigma.js** (WebGL) pour le graphe ; **lightweight-charts** pour les courbes | Next.js est l'outil naturel de Vercel. L'interface lit les résultats que les tâches Python ont déjà calculés. Sigma.js affiche des milliers de bulles de façon fluide. |
-| Phase 0 | Bibliothèque Python + scripts qui produisent un rapport | Les tâches de collecte et d'analyse de la V1 réutilisent ce code. |
-| Déploiement | Vercel (interface et API), Neon (base), GitHub Actions (collecte planifiée en Python) | Tout est gratuit et il n'y a aucun serveur à maintenir (§ 10). |
+| Analyse | Python (pandas, SciPy, statsmodels, igraph + leidenalg, scikit-learn) sur **GitHub Actions** | Les calculs statistiques sont trop lourds pour un Worker. Les résultats sont écrits dans Neon. |
+| API et interface | Worker Cloudflare : **Hono** (API) + application **React/TypeScript** (Vite) servie en fichiers statiques ; **Sigma.js** pour le graphe ; **lightweight-charts** pour les courbes | Tout chez un seul fournisseur. L'interface lit les résultats déjà calculés. |
+| Accès privé | **Cloudflare Access** (offre Zero Trust gratuite, moins de 50 utilisateurs) | Connexion obligatoire : l'outil n'est jamais public. |
+| Phase 0 | Bibliothèque Python + scripts qui produisent un rapport | Les tâches d'analyse de la V1 réutilisent ce code. |
 
 ---
 
@@ -356,22 +362,25 @@ Plus tard, si la Phase 0 montre qu'il faut du temps réel, un collecteur permane
 
 ## 10. Hébergement et coûts
 
-**Décision : solution gratuite et sans serveur à gérer.** Vérifiée le 6/11/2026.
+**Décision : solution gratuite, sans serveur à gérer, sur le compte Cloudflare du builder.** Limites vérifiées le 6/11/2026.
 
 | Rôle | Service | Limites de l'offre gratuite |
 |------|---------|-----------------------------|
 | Phase 0 | Cet environnement Claude Code | Rien à déployer. |
-| Interface web et API | **Vercel Hobby**, région Francfort (`fra1`) | Fonctions de 300 s maximum. Les tâches planifiées ne tournent qu'une fois par jour : la collecte se fait donc ailleurs. Protection « All Deployments + Vercel Authentication » gratuite, qui réserve l'accès à ton compte. |
-| Base de données | **Neon Postgres**, région Francfort | 1 Go par projet. 100 heures de calcul par mois, et la base s'endort après 5 min d'inactivité. On regroupe donc les écritures en lots pour ne pas la réveiller en permanence. |
-| Collecte planifiée | **GitHub Actions** (dépôt public) | Une exécution toutes les 15-30 min au mieux, souvent retardée. Les tâches sont désactivées après 60 jours sans activité sur le dépôt. Les journaux d'exécution sont publics : on n'y affiche jamais de données. |
+| Collecte et interface | **Cloudflare Workers** | 100 000 requêtes/jour ; 10 ms de calcul par exécution ; 5 tâches planifiées par compte, toutes les minutes au plus. |
+| Collecteur temps réel | **Cloudflare Durable Objects** (stockage SQLite) | 13 000 Go·s de durée par jour : de quoi garder **un** objet actif 24 h/24 (≈ 10 800 Go·s). Une connexion sortante ne garde l'objet en vie que 15 min, d'où l'alarme chaque minute. **À valider par un test d'une semaine.** |
+| Accès à la base | **Hyperdrive** | 100 000 requêtes/jour. |
+| Accès privé | **Cloudflare Access** | Gratuit jusqu'à 50 utilisateurs. L'activation peut demander une carte bancaire (offre à 0 €). |
+| Base de données | **Neon Postgres**, région Francfort | 1 Go par projet. 100 heures de calcul par mois, et la base s'endort après 5 min d'inactivité. Avec un collecteur permanent, elle reste éveillée : il faudra surveiller la consommation, ou écrire par lots espacés. |
+| Analyses | **GitHub Actions** (dépôt public) | Exécutions toutes les 30-60 min, parfois retardées. Les journaux sont publics : on n'y affiche jamais de données. |
 
-**Ce montage a deux limites :**
-- **pas de temps réel à la seconde** : il faudrait une machine allumée en permanence (un PC ou une VM gratuite d'Oracle Cloud). La Phase 0 dira si l'avantage disparaît trop vite pour s'en passer ;
-- **pas d'enregistrement fin des carnets d'ordres.** Le paper trading estime donc le slippage à partir des trades.
+**Sécurité des accès** : aucun jeton Cloudflare, Neon ou GitHub ne passe dans le code ni dans la conversation. Le déploiement se fait par `wrangler login` sur ta machine, ou par des secrets GitHub que tu ajoutes toi-même.
+
+**Limite restante** : pas d'enregistrement complet des carnets d'ordres, faute de place dans Neon gratuit. Le paper trading estime le slippage à partir des trades et des carnets des seuls marchés suivis.
 
 L'outil n'est pas accessible publiquement. Afficher les cotes de Polymarket à tout le monde pourrait constituer une promotion illégale en France.
 
-Toutes les données sont stockées dans l'UE.
+Les données sont stockées dans l'UE (Neon, Francfort).
 
 | Poste | Proposition |
 |-------|-------------|
@@ -397,7 +406,7 @@ Toutes les données sont stockées dans l'UE.
 ## 12. Décisions
 
 **Prises le 6/11/2026 :**
-- **Hébergement** : solution gratuite, sans serveur à gérer (§ 10).
+- **Hébergement** : solution gratuite sans serveur à gérer, sur le compte Cloudflare du builder (collecte et interface), avec Neon (PostgreSQL) et GitHub Actions (analyses) (§ 10).
 - **Budget données** : 0 €/mois au départ. Une source payante ne sera ajoutée que si la Phase 0 en montre l'utilité.
 - **Code** : choix techniques laissés à Claude, avec l'exigence de qualité du § 9.
 - **Ordre** : la Phase 0 en premier.
