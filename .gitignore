@@ -5,7 +5,7 @@
 *.pem
 *.key
 
-# Données réelles, exports et sauvegardes (jamais versionnés — dépôt public, voir docs/exception.md EXC-002)
+# Données réelles, exports et sauvegardes (jamais versionnés : le dépôt est public)
 data/
 exports/
 dossiers/
