@@ -54,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     p_fund = sub.add_parser("trace-funders", help="origine des fonds des wallets à signal")
     p_fund.add_argument("--rpc", default=DEFAULT_RPC, help="nœud RPC Polygon (lecture seule)")
     p_fund.add_argument("--young-only", action="store_true", help="seulement les wallets ≤ 30 j")
+    p_fund.add_argument("--rate", type=float, default=8.0, help="requêtes RPC par seconde")
+    p_fund.add_argument("--workers", type=int, default=6)
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -96,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
             wallets = phase0_analyze.signal_wallets(
                 conn, young_days=30 if args.young_only else None
             )
-            trace_funders(conn, PolygonRpc(args.rpc), wallets)
+            rpc = PolygonRpc(args.rpc, HttpClient(args.rpc, rate_per_s=args.rate))
+            trace_funders(conn, rpc, wallets, workers=args.workers)
         elif args.command == "profile-wallet":
             for wallet in args.wallet:
                 collector.profile_wallet(wallet.lower())
