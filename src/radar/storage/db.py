@@ -20,7 +20,12 @@ def database_url() -> str:
 
 
 def connect(url: str | None = None) -> psycopg.Connection[tuple[object, ...]]:
-    return psycopg.connect(url or database_url())
+    """Connexion en autocommit : chaque bloc `conn.transaction()` est une vraie transaction.
+
+    Sans autocommit, la première lecture ouvrirait une transaction implicite et tous les blocs
+    suivants deviendraient de simples points de sauvegarde, validés seulement à la fermeture.
+    """
+    return psycopg.connect(url or database_url(), autocommit=True)
 
 
 def _migration_files() -> list[tuple[str, str]]:

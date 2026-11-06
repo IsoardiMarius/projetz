@@ -33,3 +33,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Rapports d'analyse (contiennent des données réelles)
+reports/
