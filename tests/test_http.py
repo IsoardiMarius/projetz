@@ -96,3 +96,24 @@ def test_query_encoding_user_agent_and_cache_buster() -> None:
     assert request.url.params["n"] == "3"
     assert request.url.params["_"] == str(int(t.now * 1000))
     assert request.headers["User-Agent"].startswith("radar/")
+
+
+def test_rate_limiter_is_thread_safe() -> None:
+    import threading
+
+    slots: list[float] = []
+    lock = threading.Lock()
+    t = FakeTime()
+
+    def fake_sleep(seconds: float) -> None:
+        with lock:
+            slots.append(seconds)
+
+    limiter = RateLimiter(10.0, clock=lambda: t.now, sleep=fake_sleep)
+    threads = [threading.Thread(target=limiter.wait) for _ in range(20)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    # 20 appels au même instant : 19 attentes distinctes, espacées de 0,1 s.
+    assert sorted(round(s, 6) for s in slots) == [round(0.1 * i, 6) for i in range(1, 20)]

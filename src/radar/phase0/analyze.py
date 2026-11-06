@@ -136,11 +136,7 @@ def profile_signal_wallets(collector: Collector, rule: detector.Rule) -> int:
     known = {str(r[0]) for r in collector.conn.execute("SELECT wallet FROM wallet_profiles")}
     missing = sorted(wallets - known)
     log.info("%d wallets à profiler (%d déjà connus)", len(missing), len(wallets & known))
-    for i, wallet in enumerate(missing, start=1):
-        collector.profile_wallet(wallet)
-        if i % 100 == 0:
-            log.info("… %d / %d wallets profilés", i, len(missing))
-    return len(missing)
+    return collector.profile_wallets(missing)
 
 
 def simulate_all(

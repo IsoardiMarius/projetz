@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -29,7 +30,7 @@ class ApiError(RuntimeError):
 
 
 class RateLimiter:
-    """Espace les requêtes d'au moins `1 / rate_per_s` seconde."""
+    """Espace les requêtes d'au moins `1 / rate_per_s` seconde. Utilisable par plusieurs threads."""
 
     def __init__(
         self,
@@ -43,13 +44,15 @@ class RateLimiter:
         self._clock = clock
         self._sleep = sleep
         self._next_slot = 0.0
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
-        now = self._clock()
-        if self._next_slot > now:
-            self._sleep(self._next_slot - now)
-            now = self._next_slot
-        self._next_slot = now + self._interval
+        with self._lock:  # on réserve un créneau, puis on attend hors du verrou
+            now = self._clock()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self._interval
+        if slot > now:
+            self._sleep(slot - now)
 
 
 class HttpClient:

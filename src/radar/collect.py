@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from radar.polymarket.data_api import DataApi
 from radar.polymarket.gamma import GammaApi
-from radar.polymarket.models import Market
+from radar.polymarket.models import Activity, Market
 from radar.storage import repository
 from radar.storage.repository import Conn, MarketCollection
 
@@ -59,17 +60,34 @@ class Collector:
             log.warning("Aucun marché pour l'événement %s (filtre : %s)", slug, question_pattern)
         return self.collect_markets(markets)
 
-    def profile_wallet(self, wallet: str, *, max_rows: int = 300) -> None:
-        """Âge du wallet (première activité, dépôts compris) et ses dépôts, en une seule requête.
+    def fetch_profile(self, wallet: str, *, max_rows: int = 300) -> list[Activity]:
+        """Les `max_rows` premières lignes d'activité du wallet, dépôts compris.
 
-        On lit les `max_rows` premières lignes d'activité. Les dépôts plus tardifs ne sont pas
-        vus, ce qui suffit pour juger un compte récent.
+        La première ligne date la création du compte. Les dépôts plus tardifs ne sont pas vus,
+        ce qui suffit pour juger un compte récent.
         """
-        rows = list(
+        return list(
             self.data_api.wallet_activity(
                 wallet, include_deposits_withdrawals=True, ascending=True, limit=max_rows
             )
         )
+
+    def save_profile(self, wallet: str, rows: list[Activity]) -> None:
         first = rows[0].timestamp if rows else None
         deposits = [r for r in rows if r.type == "DEPOSIT"]
         repository.save_wallet_profile(self.conn, wallet, first, deposits)
+
+    def profile_wallet(self, wallet: str) -> None:
+        self.save_profile(wallet, self.fetch_profile(wallet))
+
+    def profile_wallets(self, wallets: list[str], *, workers: int = 8) -> int:
+        """Profile plusieurs wallets : requêtes en parallèle (débit limité), écritures en série."""
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self.fetch_profile, w): w for w in wallets}
+            for future in as_completed(futures):
+                self.save_profile(futures[future], future.result())
+                done += 1
+                if done % 250 == 0:
+                    log.info("… %d / %d wallets profilés", done, len(wallets))
+        return done
