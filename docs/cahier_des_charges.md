@@ -319,23 +319,24 @@ Le **paper trading simule le mode d'exécution**. Un ordre limite (maker) est gr
 ## 8. Architecture technique
 
 ```
- Polymarket RTDS (WS) ─┐
- Data API v2 / Gamma ──┤                       ┌─> Jobs d'analyse (Python)
- CLOB WS (carnets) ────┼─> Collecteurs async ─> PostgreSQL ─┤     signaux, graphe, scores
- RPC / Etherscan ──────┤   (Python)            (+TimescaleDB) └─> API (FastAPI) ─> Interface web
- Actualités, Kalshi ───┘                                                           (React)
+ Data API v2 / Gamma ──┐   GitHub Actions (Python, toutes les 15-30 min)
+ CLOB (prix, carnets) ─┼─> collecte + analyse (signaux, graphe, scores) ─> Neon PostgreSQL
+ RPC / Etherscan ──────┤                                                        │
+ Actualités, Kalshi ───┘                                                        v
+                                                 Vercel : API + interface web (accès privé)
 ```
+
+Plus tard, si la Phase 0 montre qu'il faut du temps réel, un collecteur permanent (flux RTDS, machine allumée 24 h/24) pourra alimenter la même base.
 
 | Couche | Choix | Pourquoi |
 |--------|-------|----------|
 | Collecte | Python 3.12+, asyncio, `httpx`, `websockets`, Pydantic v2 | Validation stricte des réponses : les API ont beaucoup changé en 2026 et il faut détecter les ruptures. |
-| Stockage | **PostgreSQL** avec l'extension TimescaleDB pour les trades et les carnets | PostgreSQL est imposé par l'organisation. TimescaleDB compresse fortement les séries temporelles : le flux global représente plusieurs millions de lignes par jour. |
+| Stockage | **PostgreSQL** : Neon en production, local en développement | PostgreSQL est imposé par l'organisation. Comme Neon gratuit est limité à 1 Go, on ne stocke que les marchés et les wallets utiles (F-06), et on recalcule les historiques à la demande depuis l'API. |
 | Schéma | SQLAlchemy 2 (Core) + Alembic (migrations) | Schéma versionné, migrations reproductibles. |
 | Analyse | Polars ou pandas, SciPy, statsmodels, igraph + leidenalg, scikit-learn | Bibliothèques standard et testées. |
-| API | FastAPI | Typée, documentation automatique. |
-| Interface | React + TypeScript + Vite ; **Sigma.js** (WebGL) pour le graphe ; **lightweight-charts** pour les courbes | Sigma.js affiche des milliers de bulles de façon fluide. Les deux bibliothèques sont open source. |
-| Phase 0 | Notebooks Jupyter qui s'appuient sur le même code que l'application | On ne réécrit rien entre l'étude et la V1. |
-| Lancement | Docker Compose (base, collecteurs, API, interface) | Un seul `docker compose up`. |
+| API et interface | **Next.js** (React, TypeScript) sur Vercel ; **Sigma.js** (WebGL) pour le graphe ; **lightweight-charts** pour les courbes | Next.js est l'outil naturel de Vercel. L'interface lit les résultats que les tâches Python ont déjà calculés. Sigma.js affiche des milliers de bulles de façon fluide. |
+| Phase 0 | Bibliothèque Python + scripts qui produisent un rapport | Les tâches de collecte et d'analyse de la V1 réutilisent ce code. |
+| Déploiement | Vercel (interface et API), Neon (base), GitHub Actions (collecte planifiée en Python) | Tout est gratuit et il n'y a aucun serveur à maintenir (§ 10). |
 
 ---
 
@@ -355,10 +356,25 @@ Le **paper trading simule le mode d'exécution**. Un ordre limite (maker) est gr
 
 ## 10. Hébergement et coûts
 
+**Décision : solution gratuite et sans serveur à gérer.** Vérifiée le 6/11/2026.
+
+| Rôle | Service | Limites de l'offre gratuite |
+|------|---------|-----------------------------|
+| Phase 0 | Cet environnement Claude Code | Rien à déployer. |
+| Interface web et API | **Vercel Hobby**, région Francfort (`fra1`) | Fonctions de 300 s maximum. Les tâches planifiées ne tournent qu'une fois par jour : la collecte se fait donc ailleurs. Protection « All Deployments + Vercel Authentication » gratuite, qui réserve l'accès à ton compte. |
+| Base de données | **Neon Postgres**, région Francfort | 1 Go par projet. 100 heures de calcul par mois, et la base s'endort après 5 min d'inactivité. On regroupe donc les écritures en lots pour ne pas la réveiller en permanence. |
+| Collecte planifiée | **GitHub Actions** (dépôt public) | Une exécution toutes les 15-30 min au mieux, souvent retardée. Les tâches sont désactivées après 60 jours sans activité sur le dépôt. Les journaux d'exécution sont publics : on n'y affiche jamais de données. |
+
+**Ce montage a deux limites :**
+- **pas de temps réel à la seconde** : il faudrait une machine allumée en permanence (un PC ou une VM gratuite d'Oracle Cloud). La Phase 0 dira si l'avantage disparaît trop vite pour s'en passer ;
+- **pas d'enregistrement fin des carnets d'ordres.** Le paper trading estime donc le slippage à partir des trades.
+
+L'outil n'est pas accessible publiquement. Afficher les cotes de Polymarket à tout le monde pourrait constituer une promotion illégale en France.
+
+Toutes les données sont stockées dans l'UE.
+
 | Poste | Proposition |
 |-------|-------------|
-| Développement | Dans cet environnement Claude Code. Tu lances l'outil en local avec Docker. |
-| Collecte 24 h/24 | Indispensable pour le flux temps réel et l'enregistrement des carnets. Il faut soit une machine allumée en permanence chez toi, soit un petit serveur (5 à 10 €/mois), à décider. |
 | Données | **0 €/mois** suffit pour la Phase 0 et la V1 : API Polymarket, Etherscan v2, RSS, Telegram, GDELT, adsb.lol, Kalshi. Environ 50 €/mois ajoute l'API X et Bitquery (origine des fonds). Environ 300 €/mois ajoute Dune et Nansen. Détail dans [`etude/C_sources_donnees.md`](etude/C_sources_donnees.md). |
 
 À vérifier : le blocage de Polymarket par les FAI français concerne `polymarket.com`. Il faut tester depuis ta connexion que les API de données restent accessibles. Si elles ne le sont pas, on en discute ; on ne contourne pas le blocage.
@@ -374,15 +390,18 @@ Le **paper trading simule le mode d'exécution**. Un ordre limite (maker) est gr
 | Faux positifs (compétence ou chance prises pour une info privilégiée) | Élevée | Moyen | Tests statistiques avec contrôle du FDR, calibration, relecture humaine. |
 | Polymarket bannit ou durcit l'accès, ou change ses API | Moyenne | Moyen | Couche d'accès isolée et testée. |
 | Cadre légal défavorable au trading réel | Certain (France) | Fort | Paper trading ; avis d'un avocat avant tout passage au réel. |
-| Volume de données important | Moyenne | Moyen | Filtres (F-06), compression TimescaleDB. |
+| Volume de données important (Neon gratuit limité à 1 Go) | Moyenne | Moyen | Filtres (F-06), purge des données anciennes, recalcul à la demande depuis l'API. |
 
 ---
 
-## 12. Décisions à prendre ensemble
+## 12. Décisions
 
-1. **Lieu de résidence** : es-tu en France ? Cela détermine la partie « positions » (paper trading ou réel).
-2. **Machine 24 h/24** : as-tu une machine allumée en permanence, ou préfères-tu un petit serveur ?
-3. **Budget données** : 0, 50 ou 300 €/mois ?
-4. **Ton implication** : est-ce que tu codes ? Est-ce que tu veux relire et comprendre chaque étape, ou piloter pendant que je développe ?
-5. **Ordre des priorités** : faut-il commencer par la Phase 0 (recommandé) ou directement par la V1 ?
-6. **Dépôt GitHub public** : le cahier des charges et l'étude décrivent tes intentions de trading. Faut-il les pousser sur le dépôt public, les garder en local, ou rendre le dépôt privé ?
+**Prises le 6/11/2026 :**
+- **Hébergement** : solution gratuite, sans serveur à gérer (§ 10).
+- **Budget données** : 0 €/mois au départ. Une source payante ne sera ajoutée que si la Phase 0 en montre l'utilité.
+- **Code** : choix techniques laissés à Claude, avec l'exigence de qualité du § 9.
+- **Ordre** : la Phase 0 en premier.
+- **Dépôt** : public, sans aucune donnée réelle.
+
+**Encore ouvert :**
+- **Lieu de résidence** (France ?). Il détermine si la partie « positions » reste en paper trading ou peut passer en réel.
