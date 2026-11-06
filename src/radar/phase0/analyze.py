@@ -167,5 +167,10 @@ def simulate_all(
     if not frames:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
-    out["lead"] = out["t_info"] - pd.to_datetime(out["signal_ts"], utc=True)
+    # Après concaténation, les colonnes mêlant dates et NaT peuvent être de type « object ».
+    for column in ("t_info", "signal_ts", "first_buy_ts", "first_activity_ts", "entry_ts"):
+        out[column] = pd.to_datetime(out[column], utc=True)
+    for column in ("wallet_age", "since_deposit"):
+        out[column] = pd.to_timedelta(out[column])
+    out["lead"] = out["t_info"] - out["signal_ts"]
     return out
