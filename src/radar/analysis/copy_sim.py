@@ -46,6 +46,38 @@ def follower_return(entry_price: float, won: bool, fee_rate: float) -> float:
     return (1.0 if won else 0.0) / cost - 1.0
 
 
+def ask_arrays(view: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Horodatages (ns) et prix des exécutions côté vendeur d'une vue de jeton."""
+    asks = view[view["ask"]]
+    times = pd.DatetimeIndex(pd.to_datetime(asks["ts"], utc=True)).as_unit("ns").asi8
+    return np.asarray(times), asks["price"].to_numpy(dtype=float)
+
+
+def ask_entries(
+    asks: tuple[np.ndarray, np.ndarray],
+    base_ns: np.ndarray,
+    delay: timedelta,
+    max_wait: timedelta,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Prix d'achat au marché après `delay` : (dans les délais ?, horodatage ns, prix).
+
+    Première exécution côté vendeur strictement après l'instant visé, si elle survient
+    dans `max_wait`.
+    """
+    ask_ns, ask_price = asks
+    target = base_ns + int(delay.total_seconds() * 1e9)
+    pos = np.searchsorted(ask_ns, target, side="right")
+    has = pos < len(ask_ns)
+    if len(ask_ns) == 0:
+        empty = np.zeros(len(base_ns), dtype=bool)
+        return empty, np.zeros(len(base_ns), dtype=np.int64), np.full(len(base_ns), np.nan)
+    safe = np.minimum(pos, len(ask_ns) - 1)
+    entry_ns = np.where(has, ask_ns[safe], 0)
+    entry_px = np.where(has, ask_price[safe], np.nan)
+    in_time = has & (entry_ns - target <= int(max_wait.total_seconds() * 1e9))
+    return in_time, entry_ns, entry_px
+
+
 def simulate(
     signals: pd.DataFrame,
     token_views: Mapping[str, pd.DataFrame],
@@ -67,9 +99,7 @@ def simulate(
     signal_ts = pd.to_datetime(signals["signal_ts"], utc=True)
     for token_id, idx in signals.groupby("token_id", sort=False).groups.items():
         view = token_views[str(token_id)]
-        asks = view[view["ask"]]
-        ask_ns = pd.DatetimeIndex(pd.to_datetime(asks["ts"], utc=True)).as_unit("ns").asi8
-        ask_price = asks["price"].to_numpy(dtype=float)
+        asks_ns_px = ask_arrays(view)
         block = signals.loc[idx]
         base_ns = pd.DatetimeIndex(signal_ts.loc[idx]).as_unit("ns").asi8
         info = [markets[str(c)] for c in block["condition_id"]]
@@ -84,13 +114,7 @@ def simulate(
             ]
         )
         for delay in delays:
-            target = base_ns + int(delay.total_seconds() * 1e9)
-            pos = np.searchsorted(ask_ns, target, side="right")
-            has = pos < len(ask_ns)
-            safe = np.minimum(pos, max(len(ask_ns) - 1, 0))
-            entry_ns = np.where(has, ask_ns[safe] if len(ask_ns) else 0, 0)
-            entry_px = np.where(has, ask_price[safe] if len(ask_ns) else np.nan, np.nan)
-            in_time = has & (entry_ns - target <= int(max_wait.total_seconds() * 1e9))
+            in_time, entry_ns, entry_px = ask_entries(asks_ns_px, base_ns, delay, max_wait)
             filled = in_time & (entry_ns < closed_ns) & (entry_px > 0)
             cost = entry_px + rates * entry_px * (1.0 - entry_px)
             ret = np.where(

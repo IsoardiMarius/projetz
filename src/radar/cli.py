@@ -14,6 +14,7 @@ from radar.phase0 import analyze as phase0_analyze
 from radar.phase0 import collect as phase0_collect
 from radar.phase0 import edge_study as phase0_edge
 from radar.phase0 import report as phase0_report
+from radar.phase0 import strategies as phase0_strategies
 from radar.phase0.sample import SampleSpec
 from radar.polymarket.data_api import DATA_API_URL, DataApi
 from radar.polymarket.gamma import GammaApi
@@ -56,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     p_fund.add_argument("--young-only", action="store_true", help="seulement les wallets ≤ 30 j")
     p_fund.add_argument("--rate", type=float, default=8.0, help="requêtes RPC par seconde")
     p_fund.add_argument("--workers", type=int, default=6)
+
+    p_strat = sub.add_parser("phase0-strategies", help="3 stratégies testées sur l'historique")
+    p_strat.add_argument("--out", type=Path, default=Path("reports/phase0"))
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -100,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             rpc = PolygonRpc(args.rpc, HttpClient(args.rpc, rate_per_s=args.rate))
             trace_funders(conn, rpc, wallets, workers=args.workers)
+        elif args.command == "phase0-strategies":
+            print(f"Rapport : {phase0_strategies.run(conn, args.out)}")
         elif args.command == "profile-wallet":
             for wallet in args.wallet:
                 collector.profile_wallet(wallet.lower())
