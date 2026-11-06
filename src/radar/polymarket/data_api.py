@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from typing import Any
 
 from radar.polymarket.http import HttpClient, QueryValue
-from radar.polymarket.models import Activity, Trade
+from radar.polymarket.models import Activity, Trade, TradeRow
 
 DATA_API_URL = "https://data-api.polymarket.com/v2"
 MAX_PAGE_SIZE = 1000
@@ -53,6 +53,18 @@ class DataApi:
         }
         for row in self.iter_rows("/trades", params):
             yield Trade.model_validate(row)
+
+    def market_trade_rows(self, condition_id: str, *, taker_only: bool) -> Iterator[TradeRow]:
+        """Comme `market_trades`, en lignes légères (collecte en masse)."""
+        params: dict[str, QueryValue] = {
+            "condition": condition_id,
+            "limit": MAX_PAGE_SIZE,
+            "taker_only": taker_only,
+            "filter_type": "TOKENS",
+            "filter_amount": 0,
+        }
+        for row in self.iter_rows("/trades", params):
+            yield TradeRow.from_api(row)
 
     def wallet_activity(
         self,

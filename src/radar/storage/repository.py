@@ -10,7 +10,7 @@ from datetime import datetime
 import psycopg
 from psycopg.types.json import Jsonb
 
-from radar.polymarket.models import Activity, Market, Trade
+from radar.polymarket.models import Activity, Market, Trade, TradeRow
 
 Conn = psycopg.Connection[tuple[object, ...]]
 
@@ -93,41 +93,63 @@ def flag_takers(all_rows: Sequence[Trade], taker_rows: Sequence[Trade]) -> tuple
     return flags, sum(remaining.values())
 
 
-def replace_market_trades(
-    conn: Conn, condition_id: str, all_rows: Sequence[Trade], taker_rows: Sequence[Trade]
+def stream_market_trades(
+    conn: Conn,
+    condition_id: str,
+    all_rows: Iterable[TradeRow],
+    taker_keys: Counter[tuple[str, str, str, str, float, float]],
 ) -> MarketCollection:
-    """Remplace tous les trades d'un marché (le marché doit déjà exister dans `markets`).
+    """Remplace les trades d'un marché en écrivant les lignes au fil de l'eau.
 
-    `all_rows` est dans l'ordre de l'API (du plus récent au plus ancien). Les lignes sont
-    numérotées de la plus ancienne à la plus récente.
+    `all_rows` arrive dans l'ordre de l'API (du plus récent au plus ancien) et n'est jamais
+    gardé en mémoire : les lignes passent par une table de transit, puis sont numérotées
+    de la plus ancienne à la plus récente (à horodatage égal, l'ordre de l'API est conservé).
+    `taker_keys` (multiensemble des lignes taker) est consommé.
     """
-    flags, unmatched = flag_takers(all_rows, taker_rows)
-    pairs = list(zip(all_rows, flags, strict=True))
-    pairs.reverse()
-    pairs.sort(key=lambda pair: pair[0].timestamp)  # tri stable : l'ordre de l'API est conservé
-    ordered = pairs
+    n_taker = sum(taker_keys.values())
+    n_rows = 0
     with conn.transaction(), conn.cursor() as cur:
-        cur.execute("DELETE FROM trades WHERE condition_id = %s", (condition_id,))
+        cur.execute(
+            "CREATE TEMP TABLE staging_trades (api_order INTEGER, ts TIMESTAMPTZ, wallet TEXT,"
+            " token_id TEXT, outcome_index SMALLINT, side TEXT, size DOUBLE PRECISION,"
+            " price DOUBLE PRECISION, is_taker BOOLEAN, tx_hash TEXT) ON COMMIT DROP"
+        )
         with cur.copy(
-            "COPY trades (condition_id, seq, ts, wallet, token_id, outcome_index, side, size,"
+            "COPY staging_trades (api_order, ts, wallet, token_id, outcome_index, side, size,"
             " price, is_taker, tx_hash) FROM STDIN"
         ) as copy:
-            for seq, (t, is_taker) in enumerate(ordered):
+            for row in all_rows:
+                key = row.match_key()
+                is_taker = taker_keys[key] > 0
+                if is_taker:
+                    taker_keys[key] -= 1
                 copy.write_row(
                     (
-                        condition_id,
-                        seq,
-                        t.timestamp,
-                        t.wallet,
-                        t.token_id,
-                        t.outcome_index,
-                        t.side,
-                        t.size,
-                        t.price,
+                        n_rows,
+                        row.ts,
+                        row.wallet,
+                        row.token_id,
+                        row.outcome_index,
+                        row.side,
+                        row.size,
+                        row.price,
                         is_taker,
-                        t.transaction_hash,
+                        row.tx_hash,
                     )
                 )
+                n_rows += 1
+        cur.execute("DELETE FROM trades WHERE condition_id = %s", (condition_id,))
+        cur.execute(
+            """
+            INSERT INTO trades (condition_id, seq, ts, wallet, token_id, outcome_index, side,
+                size, price, is_taker, tx_hash)
+            SELECT %s, (row_number() OVER (ORDER BY ts, api_order DESC) - 1)::int, ts, wallet,
+                token_id, outcome_index, side, size, price, is_taker, tx_hash
+            FROM staging_trades
+            """,
+            (condition_id,),
+        )
+        unmatched = sum(v for v in taker_keys.values() if v > 0)
         cur.execute(
             """
             INSERT INTO market_collections
@@ -137,9 +159,19 @@ def replace_market_trades(
                 n_rows = EXCLUDED.n_rows, n_taker_rows = EXCLUDED.n_taker_rows,
                 n_unmatched_taker_rows = EXCLUDED.n_unmatched_taker_rows
             """,
-            (condition_id, len(all_rows), len(taker_rows), unmatched),
+            (condition_id, n_rows, n_taker, unmatched),
         )
-    return MarketCollection(condition_id, len(all_rows), len(taker_rows), unmatched)
+    return MarketCollection(condition_id, n_rows, n_taker, unmatched)
+
+
+def replace_market_trades(
+    conn: Conn, condition_id: str, all_rows: Sequence[Trade], taker_rows: Sequence[Trade]
+) -> MarketCollection:
+    """Variante en mémoire de `stream_market_trades` (petits volumes, tests)."""
+    keys = Counter(TradeRow.from_trade(t).match_key() for t in taker_rows)
+    return stream_market_trades(
+        conn, condition_id, (TradeRow.from_trade(t) for t in all_rows), keys
+    )
 
 
 def collected_conditions(conn: Conn) -> set[str]:

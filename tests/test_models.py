@@ -39,3 +39,16 @@ def test_market_uses_explicit_event_over_embedded() -> None:
     market = Market.from_gamma(gamma_market(), event=event)
     assert market.event_id == "99"
     assert market.tags == ("politics",)
+
+
+def test_trade_row_is_light_and_validated() -> None:
+    import pytest
+
+    from radar.polymarket.models import TradeRow
+
+    row = TradeRow.from_api(trade_row())
+    assert row.wallet == WALLET_A
+    assert row.ts == datetime(2026, 2, 1, tzinfo=UTC)
+    assert row.match_key() == Trade.model_validate(trade_row()).match_key()
+    with pytest.raises(ValueError, match="côté inconnu"):
+        TradeRow.from_api(trade_row(side="HOLD"))

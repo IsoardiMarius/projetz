@@ -67,7 +67,12 @@ def main(argv: list[str] | None = None) -> int:
             applied = db.migrate(conn)
             print("Migrations appliquées :", ", ".join(applied) or "aucune")
             return 0
-        collector = Collector(conn, DataApi(HttpClient(DATA_API_URL, rate_per_s=25.0)), GammaApi())
+        collector = Collector(
+            conn,
+            DataApi(HttpClient(DATA_API_URL, rate_per_s=25.0)),
+            GammaApi(),
+            connect=db.connect,
+        )
         if args.command == "collect-market":
             collector.collect_conditions(args.condition)
         elif args.command == "collect-event":

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,6 +22,52 @@ def _from_epoch(value: Any) -> datetime:
 
 class _ApiModel(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+
+
+class TradeRow(NamedTuple):
+    """Ligne de trade légère, pour la collecte en masse (pas d'objet pydantic par ligne)."""
+
+    ts: datetime
+    wallet: str
+    token_id: str
+    outcome_index: int | None
+    side: str
+    size: float
+    price: float
+    tx_hash: str
+
+    @classmethod
+    def from_api(cls, row: dict[str, Any]) -> TradeRow:
+        side = str(row["side"])
+        if side not in ("BUY", "SELL"):
+            raise ValueError(f"côté inconnu : {side!r}")
+        index = row.get("outcome_index")
+        return cls(
+            ts=_from_epoch(row["timestamp"]),
+            wallet=str(row["proxy_wallet"]).lower(),
+            token_id=str(row["token_id"]),
+            outcome_index=None if index is None else int(index),
+            side=side,
+            size=float(row["size"]),
+            price=float(row["price"]),
+            tx_hash=str(row["transaction_hash"]),
+        )
+
+    @classmethod
+    def from_trade(cls, t: Trade) -> TradeRow:
+        return cls(
+            t.timestamp,
+            t.wallet,
+            t.token_id,
+            t.outcome_index,
+            t.side,
+            t.size,
+            t.price,
+            t.transaction_hash,
+        )
+
+    def match_key(self) -> tuple[str, str, str, str, float, float]:
+        return (self.tx_hash, self.wallet, self.token_id, self.side, self.size, self.price)
 
 
 class Trade(_ApiModel):
