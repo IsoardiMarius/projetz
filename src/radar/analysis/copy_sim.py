@@ -15,10 +15,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 from radar.analysis.fees import taker_fee_per_share
-from radar.analysis.prices import ask_price_after
 
 DEFAULT_DELAYS: tuple[timedelta, ...] = (
     timedelta(seconds=0),
@@ -54,34 +54,58 @@ def simulate(
     *,
     max_wait: timedelta = timedelta(hours=2),
 ) -> pd.DataFrame:
-    """Une ligne par (signal, retard).
+    """Une ligne par (signal, retard), calculée en bloc par jeton (recherche dichotomique).
 
     Colonnes ajoutées : delay_s, filled, entry_ts, entry_price, won, ret. `filled` vaut False
     si aucune exécution n'a eu lieu dans le délai `max_wait`, ou si le marché était déjà
-    clôturé à l'heure d'entrée.
+    clôturé à l'heure d'entrée. L'entrée a toujours lieu strictement après l'instant visé :
+    jamais dans le bloc du signal.
     """
-    rows: list[dict[str, object]] = []
-    for signal in signals.to_dict("records"):
-        market = markets[str(signal["condition_id"])]
-        token_id = str(signal["token_id"])
-        view = token_views[token_id]
-        won = market.winning_token_id == token_id
-        signal_ts = pd.Timestamp(signal["signal_ts"]).to_pydatetime()
+    if signals.empty:
+        return pd.DataFrame()
+    frames: list[pd.DataFrame] = []
+    signal_ts = pd.to_datetime(signals["signal_ts"], utc=True)
+    for token_id, idx in signals.groupby("token_id", sort=False).groups.items():
+        view = token_views[str(token_id)]
+        asks = view[view["ask"]]
+        ask_ns = pd.DatetimeIndex(pd.to_datetime(asks["ts"], utc=True)).as_unit("ns").asi8
+        ask_price = asks["price"].to_numpy(dtype=float)
+        block = signals.loc[idx]
+        base_ns = pd.DatetimeIndex(signal_ts.loc[idx]).as_unit("ns").asi8
+        info = [markets[str(c)] for c in block["condition_id"]]
+        won = np.array([m.winning_token_id == str(token_id) for m in info])
+        rates = np.array([m.fee_rate for m in info])
+        closed_ns = np.array(
+            [
+                pd.Timestamp(m.closed_time).value
+                if m.closed_time is not None
+                else np.iinfo(np.int64).max
+                for m in info
+            ]
+        )
         for delay in delays:
-            entry = ask_price_after(view, signal_ts + delay, max_wait=max_wait, strict=True)
-            filled = entry is not None and (
-                market.closed_time is None or entry[0] < market.closed_time
+            target = base_ns + int(delay.total_seconds() * 1e9)
+            pos = np.searchsorted(ask_ns, target, side="right")
+            has = pos < len(ask_ns)
+            safe = np.minimum(pos, max(len(ask_ns) - 1, 0))
+            entry_ns = np.where(has, ask_ns[safe] if len(ask_ns) else 0, 0)
+            entry_px = np.where(has, ask_price[safe] if len(ask_ns) else np.nan, np.nan)
+            in_time = has & (entry_ns - target <= int(max_wait.total_seconds() * 1e9))
+            filled = in_time & (entry_ns < closed_ns) & (entry_px > 0)
+            cost = entry_px + rates * entry_px * (1.0 - entry_px)
+            ret = np.where(
+                filled, np.where(won, 1.0, 0.0) / np.where(filled, cost, 1.0) - 1.0, np.nan
             )
-            row: dict[str, object] = {str(k): v for k, v in signal.items()}
-            row.update(
-                delay_s=int(delay.total_seconds()),
-                filled=filled,
-                entry_ts=entry[0] if entry else None,
-                entry_price=entry[1] if entry else None,
-                won=won,
-                ret=None,
-            )
-            if filled and entry is not None and entry[1] > 0:
-                row["ret"] = follower_return(entry[1], won, market.fee_rate)
-            rows.append(row)
-    return pd.DataFrame(rows)
+            out = block.copy()
+            out["delay_s"] = int(delay.total_seconds())
+            out["filled"] = filled
+            out["entry_ts"] = pd.to_datetime(np.where(in_time, entry_ns, 0), utc=True, unit="ns")
+            out.loc[~in_time, "entry_ts"] = pd.NaT
+            out["entry_price"] = np.where(in_time, entry_px, np.nan)
+            out["won"] = won
+            out["ret"] = ret
+            frames.append(out)
+    result = pd.concat(frames, ignore_index=True)
+    order = {int(d.total_seconds()): i for i, d in enumerate(delays)}
+    result["_d"] = result["delay_s"].map(order)
+    return result.sort_values(["_d"], kind="stable").drop(columns="_d").reset_index(drop=True)

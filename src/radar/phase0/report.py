@@ -296,29 +296,37 @@ def _sensitivity(
         "|---|---|---|---|---|---|---|",
     ]
     sample = [r for r in results if r.market.grp == "sample"]
-    for max_price, min_usdc, age_days in itertools.product(
-        (0.2, 0.35, 0.5), (500, 1000, 5000), (2, 7, 30)
-    ):
-        rule = replace(
-            base_rule,
-            max_price=max_price,
-            min_usdc=min_usdc,
-            max_wallet_age=timedelta(days=age_days),
-        )
-        rerun = [replace(r, signals=detector.accumulation_signals(r.trades, rule)) for r in sample]
+    if not sample:
+        return lines
+    ages = (2, 7, 30)
+    rows: dict[tuple[float, int, int], str] = {}
+    # Le seuil d'âge ne change pas les signaux : 9 calculs suffisent pour les 27 réglages.
+    for max_price, min_usdc in itertools.product((0.2, 0.35, 0.5), (500, 1000, 5000)):
+        rule = replace(base_rule, max_price=max_price, min_usdc=min_usdc)
+        parts = [detector.accumulation_signals(r.trades, rule) for r in sample]
+        parts = [p for p in parts if not p.empty]
+        signals = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
         sim = simulate_all(
-            rerun, profiles, deposits, rule, delays=(timedelta(0), timedelta(minutes=5))
+            sample,
+            profiles,
+            deposits,
+            rule,
+            delays=(timedelta(0), timedelta(minutes=5)),
+            signals=signals,
         )
-        if sim.empty:
-            continue
-        alerts0 = sim[sim["alert"] & (sim["delay_s"] == 0)]
-        a5 = sim[sim["alert"] & (sim["delay_s"] == 300) & sim["filled"]]
-        est = cluster_bootstrap_mean(a5["ret"], a5["event_id"])
-        hit = alerts0["won"].mean() if len(alerts0) else float("nan")
-        lines.append(
-            f"| {max_price:.2f} | {min_usdc:,} $ | {age_days} j | {len(alerts0)} | "
-            f"{hit:.0%} | {alerts0['signal_vwap'].mean():.0%} | {est.fmt()} |"
-        )
+        for age_days in ages:
+            if sim.empty:
+                continue
+            young = sim["wallet_age"].notna() & (sim["wallet_age"] <= pd.Timedelta(days=age_days))
+            alerts0 = sim[young & (sim["delay_s"] == 0)]
+            a5 = sim[young & (sim["delay_s"] == 300) & sim["filled"]]
+            est = cluster_bootstrap_mean(a5["ret"], a5["event_id"])
+            hit = alerts0["won"].mean() if len(alerts0) else float("nan")
+            rows[(max_price, min_usdc, age_days)] = (
+                f"| {max_price:.2f} | {min_usdc:,} $ | {age_days} j | {len(alerts0)} | "
+                f"{hit:.0%} | {alerts0['signal_vwap'].mean():.0%} | {est.fmt()} |"
+            )
+    lines += [rows[k] for k in sorted(rows)]
     return lines
 
 

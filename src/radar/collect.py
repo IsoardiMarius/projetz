@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from radar.polymarket.data_api import DataApi
 from radar.polymarket.gamma import GammaApi
-from radar.polymarket.models import Activity, Market
+from radar.polymarket.models import Activity, Market, Trade
 from radar.storage import repository
 from radar.storage.repository import Conn, MarketCollection
 
@@ -22,30 +22,46 @@ class Collector:
         self.data_api = data_api
         self.gamma = gamma
 
-    def collect_markets(self, markets: Iterable[Market], *, skip_collected: bool = True) -> int:
-        """Enregistre les métadonnées puis tous les trades de chaque marché."""
+    def collect_markets(
+        self, markets: Iterable[Market], *, skip_collected: bool = True, workers: int = 6
+    ) -> int:
+        """Enregistre les métadonnées puis tous les trades de chaque marché.
+
+        Les marchés sont téléchargés en parallèle (le débit global reste plafonné par le client
+        HTTP), puis écrits un par un dans la base, dans l'ordre où ils arrivent.
+        """
         markets = list(markets)
         repository.upsert_markets(self.conn, markets)
         done = repository.collected_conditions(self.conn) if skip_collected else set()
-        n = 0
-        for market in markets:
-            if market.condition_id in done:
-                continue
-            result = self.collect_trades(market.condition_id)
-            log.info(
-                "%s : %d lignes (%d taker, %d non rapprochées) — %s",
-                market.condition_id[:10],
-                result.n_rows,
-                result.n_taker_rows,
-                result.n_unmatched_taker_rows,
-                market.question[:70],
-            )
-            n += 1
-        return n
+        todo = [m for m in markets if m.condition_id not in done]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self.fetch_trades, m.condition_id): m for m in todo}
+            for n, future in enumerate(as_completed(futures), start=1):
+                market = futures[future]
+                all_rows, taker_rows = future.result()
+                result = repository.replace_market_trades(
+                    self.conn, market.condition_id, all_rows, taker_rows
+                )
+                log.info(
+                    "[%d/%d] %s : %d lignes (%d taker, %d non rapprochées) — %s",
+                    n,
+                    len(todo),
+                    market.condition_id[:10],
+                    result.n_rows,
+                    result.n_taker_rows,
+                    result.n_unmatched_taker_rows,
+                    market.question[:60],
+                )
+        return len(todo)
 
-    def collect_trades(self, condition_id: str) -> MarketCollection:
+    def fetch_trades(self, condition_id: str) -> tuple[list[Trade], list[Trade]]:
+        """Les deux flux d'un marché : toutes les lignes, et les seules lignes taker."""
         all_rows = list(self.data_api.market_trades(condition_id, taker_only=False))
         taker_rows = list(self.data_api.market_trades(condition_id, taker_only=True))
+        return all_rows, taker_rows
+
+    def collect_trades(self, condition_id: str) -> MarketCollection:
+        all_rows, taker_rows = self.fetch_trades(condition_id)
         return repository.replace_market_trades(self.conn, condition_id, all_rows, taker_rows)
 
     def collect_conditions(self, condition_ids: list[str]) -> int:

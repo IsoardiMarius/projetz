@@ -88,6 +88,9 @@ def load_trades(conn: Conn, condition_id: str) -> pd.DataFrame:
     columns = ["condition_id", "ts", "wallet", "token_id", "side", "size", "price", "is_taker"]
     frame = pd.DataFrame(cur.fetchall(), columns=columns)
     frame["ts"] = pd.to_datetime(frame["ts"], utc=True)
+    # Colonnes très répétitives : en catégories, la mémoire est divisée par 5 à 10.
+    for column in ("condition_id", "wallet", "token_id", "side"):
+        frame[column] = frame[column].astype("category")
     return frame
 
 
@@ -145,29 +148,44 @@ def simulate_all(
     deposits: pd.DataFrame,
     rule: detector.Rule,
     delays: tuple[timedelta, ...] = copy_sim.DEFAULT_DELAYS,
+    *,
+    signals: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Signaux enrichis (contexte du wallet, alerte, avance sur l'information) et simulation."""
-    frames = []
-    for res in results:
-        if res.signals.empty:
-            continue
-        ctx = detector.add_wallet_context(res.signals, profiles, deposits)
-        ctx["alert"] = detector.is_alert(ctx, rule)
-        ctx["grp"] = res.market.grp
-        ctx["case_key"] = res.market.case_key
-        ctx["event_id"] = res.market.event_id or res.market.condition_id
-        ctx["t_info"] = pd.Timestamp(res.t_info) if res.t_info else pd.NaT
-        info = copy_sim.MarketInfo(
-            winning_token_id=res.market.winning_token_id,
-            closed_time=res.market.closed_time,
-            fee_rate=res.market.fee_rate,
-        )
-        sim = copy_sim.simulate(ctx, res.views, {res.market.condition_id: info}, delays)
-        frames.append(sim)
-    if not frames:
+    """Signaux enrichis (contexte du wallet, alerte, avance sur l'information) et simulation.
+
+    Tout est calculé en une passe sur l'ensemble des marchés. `signals` permet de fournir des
+    signaux calculés avec une autre règle (analyse de sensibilité) ; par défaut, on prend
+    ceux de chaque marché.
+    """
+    if signals is None:
+        parts = [r.signals for r in results if not r.signals.empty]
+        signals = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    if signals.empty:
         return pd.DataFrame()
-    out = pd.concat(frames, ignore_index=True)
-    # Après concaténation, les colonnes mêlant dates et NaT peuvent être de type « object ».
+    ctx = detector.add_wallet_context(signals, profiles, deposits)
+    ctx["alert"] = detector.is_alert(ctx, rule)
+    meta = pd.DataFrame(
+        {
+            "condition_id": [r.market.condition_id for r in results],
+            "grp": [r.market.grp for r in results],
+            "case_key": [r.market.case_key for r in results],
+            "event_id": [r.market.event_id or r.market.condition_id for r in results],
+            "t_info": pd.to_datetime(
+                pd.Series([r.t_info for r in results], dtype="object"), utc=True
+            ),
+        }
+    )
+    ctx = ctx.merge(meta, on="condition_id", how="inner")
+    views = {token: view for r in results for token, view in r.views.items()}
+    infos = {
+        r.market.condition_id: copy_sim.MarketInfo(
+            winning_token_id=r.market.winning_token_id,
+            closed_time=r.market.closed_time,
+            fee_rate=r.market.fee_rate,
+        )
+        for r in results
+    }
+    out = copy_sim.simulate(ctx, views, infos, delays)
     for column in ("t_info", "signal_ts", "first_buy_ts", "first_activity_ts", "entry_ts"):
         out[column] = pd.to_datetime(out[column], utc=True)
     for column in ("wallet_age", "since_deposit"):
