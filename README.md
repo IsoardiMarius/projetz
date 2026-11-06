@@ -36,9 +36,10 @@ uv run radar phase0-profile                         # âge et dépôts des walle
 uv run radar trace-funders --young-only --rate 30 --workers 16   # origine des fonds (RPC Polygon)
 uv run radar phase0-report --out reports/phase0     # rapport Phase 0 (local, non versionné)
 uv run radar phase0-edge --out reports/phase0       # détecteur v2 (local, non versionné)
+uv run radar phase0-strategies --out reports/phase0 # 3 stratégies sur l'historique (local)
 ```
 
-Résultats : [Phase 0](docs/phase0_resultats.md), [détecteur v2](docs/detecteur_v2_resultats.md).
+Résultats : [Phase 0](docs/phase0_resultats.md), [détecteur v2](docs/detecteur_v2_resultats.md), [3 stratégies](docs/strategies_resultats.md).
 
 ## Données et vie privée
 
