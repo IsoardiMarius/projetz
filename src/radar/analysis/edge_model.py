@@ -122,6 +122,20 @@ def cross_validate(
     )
 
 
+def make_gbm() -> HistGradientBoostingClassifier:
+    """Gradient boosting peu profond et fortement régularisé (peu de signal, beaucoup de bruit)."""
+    return HistGradientBoostingClassifier(
+        max_depth=3,
+        learning_rate=0.05,
+        max_iter=300,
+        min_samples_leaf=100,
+        l2_regularization=1.0,
+        early_stopping=True,
+        validation_fraction=0.2,
+        random_state=0,
+    )
+
+
 def cross_validate_gbm(
     data: pd.DataFrame,
     features: Sequence[str],
@@ -142,16 +156,7 @@ def cross_validate_gbm(
     preds = np.full(len(data), np.nan)
     splitter = GroupKFold(n_splits=min(folds, len(np.unique(groups))))
     for train, test in splitter.split(x, y, groups):
-        model = HistGradientBoostingClassifier(
-            max_depth=3,
-            learning_rate=0.05,
-            max_iter=300,
-            min_samples_leaf=100,
-            l2_regularization=1.0,
-            early_stopping=True,
-            validation_fraction=0.2,
-            random_state=0,
-        ).fit(x[train], y[train])
+        model = make_gbm().fit(x[train], y[train])
         preds[test] = model.predict_proba(x[test])[:, 1]
     return pd.Series(preds, index=data.index), log_loss(y.astype(float), preds)
 

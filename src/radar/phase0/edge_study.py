@@ -185,16 +185,28 @@ def run(conn: Conn, out_dir: Path, *, split_date: datetime | None = None) -> Edg
                 test[FEATURES].to_numpy(dtype=float), test["logit_price"].to_numpy(dtype=float)
             )
         )
-        loss_m = edge_model.log_loss(test["won"].to_numpy(), test["pred_time"].to_numpy())
-        loss_p = edge_model.log_loss(test["won"].to_numpy(), test["follow_cost"].to_numpy())
+        gbm = edge_model.make_gbm().fit(
+            train[FEATURES].to_numpy(dtype=float), train["won"].to_numpy(dtype=int)
+        )
+        test = test.assign(
+            pred_gbm_time=gbm.predict_proba(test[FEATURES].to_numpy(dtype=float))[:, 1]
+        )
+        won = test["won"].to_numpy()
+        loss_m = edge_model.log_loss(won, test["pred_time"].to_numpy())
+        loss_g = edge_model.log_loss(won, test["pred_gbm_time"].to_numpy())
+        loss_p = edge_model.log_loss(won, test["follow_cost"].to_numpy())
         lines_time = [
             f"Entraînement : {len(train)} signaux de marchés résolus avant le "
             f"{split:%d/%m/%Y} ; test : {len(test)} signaux émis après.",
             "",
-            f"Amélioration de la log-loss sur le test : **{1 - loss_m / loss_p:+.2%}** "
-            "(positif = le modèle bat le prix).",
+            "- Modèle linéaire : amélioration de la log-loss sur le test "
+            f"**{1 - loss_m / loss_p:+.2%}** (positif = le modèle bat le prix).",
             "",
             *_strategy_rows(test, "pred_time"),
+            "",
+            f"- Gradient boosting : amélioration **{1 - loss_g / loss_p:+.2%}**.",
+            "",
+            *_strategy_rows(test, "pred_gbm_time"),
         ]
         full = edge_model.OffsetLogit(c=0.5).fit(
             sample[FEATURES].to_numpy(dtype=float),

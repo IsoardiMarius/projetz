@@ -31,10 +31,14 @@ uv run ruff check . && uv run mypy                      # qualité
 Phase 0 ([méthode](docs/phase0_methode.md)) :
 
 ```bash
-uv run radar phase0-collect --cases --sample 400   # cas connus + échantillon aléatoire
-uv run radar phase0-profile                        # âge et dépôts des wallets à signal
-uv run radar phase0-report --out reports/phase0    # rapport local (non versionné)
+uv run radar phase0-collect --cases --sample 10000  # cas connus + tous les marchés géopolitiques éligibles
+uv run radar phase0-profile                         # âge et dépôts des wallets à signal
+uv run radar trace-funders --young-only --rate 30 --workers 16   # origine des fonds (RPC Polygon)
+uv run radar phase0-report --out reports/phase0     # rapport Phase 0 (local, non versionné)
+uv run radar phase0-edge --out reports/phase0       # détecteur v2 (local, non versionné)
 ```
+
+Résultats : [Phase 0](docs/phase0_resultats.md), [détecteur v2](docs/detecteur_v2_resultats.md).
 
 ## Données et vie privée
 
