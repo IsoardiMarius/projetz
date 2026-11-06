@@ -24,8 +24,16 @@ uv sync
 export RADAR_DATABASE_URL="postgresql://user@localhost:5432/radar"   # ne jamais versionner d'identifiants
 uv run radar migrate
 uv run radar collect-market --condition 0x...           # tous les trades d'un marché
-uv run pytest                                           # tests
+uv run pytest                                           # tests (base de test : RADAR_TEST_DATABASE_URL)
 uv run ruff check . && uv run mypy                      # qualité
+```
+
+Phase 0 ([méthode](docs/phase0_methode.md)) :
+
+```bash
+uv run radar phase0-collect --cases --sample 400   # cas connus + échantillon aléatoire
+uv run radar phase0-profile                        # âge et dépôts des wallets à signal
+uv run radar phase0-report --out reports/phase0    # rapport local (non versionné)
 ```
 
 ## Données et vie privée
